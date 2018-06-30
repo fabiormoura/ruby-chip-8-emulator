@@ -67,7 +67,6 @@ class Vram < Memory
   end
 end
 
-
 class Stack
   def initialize(levels:, item_size_in_bits:)
     @addresses = []
@@ -136,7 +135,6 @@ class Registers
   end
 end
 
-
 class ProgramCounter < Register
   def initialize
     super(size_in_bits: 16, initial_data: 0x200, name: "PC")
@@ -149,9 +147,91 @@ class MemoryAddress < Register
   end
 end
 
-class Instruction
-  def execute(opcode)
+class InstructionId
+  attr_reader :opcode
+  @@default_comparator = -> (opcode, other_opcode) { opcode == other_opcode }
 
+  # @param [Integer] opcode
+  # @param [Proc] comparator
+  def initialize(opcode=nil, &comparator)
+    @opcode = opcode
+    @comparator = comparator
+  end
+
+  # @param [InstructionId] other
+  def eql?(other)
+    other.matches_opcode?(@opcode) || matches_opcode?(other.opcode)
+  end
+
+  # @param [Integer] opcode
+  # @return [TrueClass|FalseClass]
+  def matches_opcode?(opcode)
+    return @comparator.call(opcode) unless @comparator.nil?
+    @@default_comparator.call(@opcode, opcode)
+  end
+
+  def hash
+    1.hash
+  end
+end
+
+class ProgramRunner
+  # @param [Array[Instruction]] instructions
+  # @param [Ram] ram
+  # @param [ProgramCounter] pc
+  # @param [Registers] registers
+  # @param [MemoryAddress] ma
+  # @param [Stack] stack
+  def initialize(instructions:, ram:, pc:, registers:, ma:, stack:)
+    @instructions_map = instructions.map{ |instruction| [instruction.instruction_id, instruction] }.to_h
+    @ram = ram
+    @pc = pc
+    @registers = registers
+    @ma = ma
+    @stack = stack
+  end
+
+  def start
+    while true
+      code = @ram.read(register: @pc, length: 2)
+      puts "OPCODE: #{code.to_s(16)}"
+      instruction = @instructions_map[InstructionId.new(code)]
+      if instruction.nil?
+        puts "WARN: no instruction implemented for #{code.to_s(16)}"
+      else
+        puts instruction
+        instruction.execute(code)
+      end
+
+      puts @pc
+      puts @ma
+      puts @stack
+      puts @registers
+      puts "waiting for input"
+      next gets == "n"
+      break if gets == "q"
+    end
+  end
+end
+
+class Instruction
+  attr_reader :instruction_id
+  # @param [InstructionId] instruction_id
+  def initialize(instruction_id:)
+    @instruction_id = instruction_id
+  end
+
+  # @param [Integer] opcode
+  def execute(opcode)
+    raise NotImplementedError
+  end
+
+  def skip_opcode?(opcode)
+    !@instruction_id.matches_opcode?(opcode)
+  end
+
+  def to_s
+    "INSTRUCTION: #{self.class.name}"
   end
 end
 
@@ -159,10 +239,11 @@ class ClearDisplay < Instruction
   # @param [Display] display
   def initialize(display:)
     @display = display
+    super(instruction_id: InstructionId.new(0x00E0))
   end
 
   def execute(opcode)
-    return unless opcode == 0x00E0
+    return if skip_opcode?(opcode)
     @display.clear
   end
 end
@@ -173,10 +254,11 @@ class ReturnFromSubroutine < Instruction
   def initialize(stack:, pc:)
     @stack = stack
     @pc = pc
+    super(instruction_id: InstructionId.new(0x00EE))
   end
 
   def execute(opcode)
-    return unless opcode == 0x00EE
+    return if skip_opcode?(opcode)
     puts "TODO: implement me"
   end
 end
@@ -185,10 +267,11 @@ class Jump < Instruction
   # @param [ProgramCounter] pc
   def initialize(pc:)
     @pc = pc
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x1000 })
   end
 
   def execute(opcode)
-    return unless opcode & 0xF000 == 0x1000
+    return if skip_opcode?(opcode)
     @pc.update(opcode & 0x0FFF)
   end
 end
@@ -199,10 +282,11 @@ class Call < Instruction
   def initialize(pc:, stack:)
     @pc = pc
     @stack = stack
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x2000 })
   end
 
   def execute(opcode)
-    return unless opcode & 0xF000 == 0x2000
+    return if skip_opcode?(opcode)
     @stack.push(@pc.read)
     @pc.update(opcode & 0x0FFF)
   end
@@ -214,14 +298,14 @@ class SkipRegisterEqualsValue < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 3xkk => Vx == kk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x3000 })
   end
 
   def execute(opcode)
-    # 3xkk => Vx == kk
-    return unless opcode & 0xF000 == 0x3000
+    return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     @pc.add(2) if @registers.read_register(register_index) == opcode & 0x00FF
-
   end
 end
 
@@ -231,11 +315,12 @@ class SkipRegisterNotEqualsValue < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 4xkk => Vx != kk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x4000 })
   end
 
   def execute(opcode)
-    # 4xkk => Vx != kk
-    return unless opcode & 0xF000 == 0x4000
+    return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     @pc.add(2) if @registers.read_register(register_index) != opcode & 0x00FF
   end
@@ -247,11 +332,12 @@ class SkipRegisterEqualsRegister < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 5xy0 => Vx == kk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x5000 })
   end
 
   def execute(opcode)
-    # 5xy0 => Vx == kk
-    return unless opcode & 0xF000 == 0x5000
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
     @pc.add(2) if @registers.read_register(first_register_index) == @registers.read_register(second_register_index)
@@ -264,11 +350,12 @@ class UpdateRegister < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 6xkk => Vx <= kk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x6000 })
   end
 
   def execute(opcode)
-    # 6xkk => Vx <= kk
-    return unless opcode & 0xF000 == 0x6000
+    return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     value = opcode & 0x00FF
     @registers.update_register(register_index, value)
@@ -282,11 +369,12 @@ class AddToRegister < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 7xkk => Vx = Vx + kk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0x7000 })
   end
 
   def execute(opcode)
-    # 7xkk => Vx = Vx + kk
-    return unless opcode & 0xF000 == 0x7000
+    return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     value = opcode & 0x00FF
     current_value = @registers.read_register(register_index).read
@@ -301,11 +389,12 @@ class Copy < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy0 => Vx = Vy
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8000 })
   end
 
   def execute(opcode)
-    # 8xy0 => Vx = Vy
-    return unless opcode & 0xF00F == 0x8000
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -321,11 +410,12 @@ class Or < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy1 => Vx = Vx | Vy
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8001 })
   end
 
   def execute(opcode)
-    # 8xy1 => Vx = Vx | Vy
-    return unless opcode & 0xF00F == 0x8001
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -336,18 +426,18 @@ class Or < Instruction
   end
 end
 
-
 class And < Instruction
   # @param [Registers] registers
   # @param [ProgramCounter] pc
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy2 => Vx = Vx & Vy
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8002 })
   end
 
   def execute(opcode)
-    # 8xy2 => Vx = Vx & Vy
-    return unless opcode & 0xF00F == 0x8002
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -364,11 +454,12 @@ class Xor < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy3 => Vx = Vx ^ Vy
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8003 })
   end
 
   def execute(opcode)
-    # 8xy3 => Vx = Vx ^ Vy
-    return unless opcode & 0xF00F == 0x8003
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -385,11 +476,12 @@ class SumRegisters < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy4 => Vx = Vx + Vy, VF = carry
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8004 })
   end
 
   def execute(opcode)
-    # 8xy4 => Vx = Vx + Vy, VF = carry
-    return unless opcode & 0xF00F == 0x8004
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -408,11 +500,12 @@ class SubRegisters < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy5 => Vx = Vx - Vy, VF = NOT borrow
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8005 })
   end
 
   def execute(opcode)
-    # 8xy5 => Vx = Vx - Vy, VF = NOT borrow
-    return unless opcode & 0xF00F == 0x8005
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -430,11 +523,12 @@ class ShiftRightRegisters < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy6 => Vx=Vy>>1,  VF = Vy & 0x01
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8006 })
   end
 
   def execute(opcode)
-    # 8xy6 => Vx=Vy>>1,  VF = Vy & 0x01
-    return unless opcode & 0xF00F == 0x8006
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -451,11 +545,12 @@ class SubbRegisters < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xy5 => Vx = Vy - Vx, VF = NOT borrow
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x8007 })
   end
 
   def execute(opcode)
-    # 8xy5 => Vx = Vy - Vx, VF = NOT borrow
-    return unless opcode & 0xF00F == 0x8007
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -473,11 +568,12 @@ class ShiftLeftRegisters < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 8xyE => Vx=Vy<<1,  VF = Vy & 0x01
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x800E })
   end
 
   def execute(opcode)
-    # 8xyE => Vx=Vy<<1,  VF = Vy & 0x01
-    return unless opcode & 0xF00F == 0x800E
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
 
@@ -494,11 +590,12 @@ class SkipRegisterNotEqualsRegister < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # 9xy0 => Vx != Vy
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF00F == 0x9000 })
   end
 
   def execute(opcode)
-    # 9xy0 => Vx != Vy
-    return unless opcode & 0xF00F == 0x9000
+    return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
     @pc.add(2) if @registers.read_register(first_register_index) != @registers.read_register(second_register_index)
@@ -511,11 +608,12 @@ class SetMemoryAddressRegister < Instruction
   def initialize(ma:, pc:)
     @ma = ma
     @pc = pc
+    # Annn
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0xA000 })
   end
 
   def execute(opcode)
-    # Annn
-    return unless opcode & 0xF000 == 0xA000
+    return if skip_opcode?(opcode)
     address = opcode & 0x0FFF
     @ma.update(address)
     @pc.add(2)
@@ -528,11 +626,12 @@ class JumpToV0 < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # Bnnn
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0xB000 })
   end
 
   def execute(opcode)
-    # Bnnn
-    return unless opcode & 0xF000 == 0xB000
+    return if skip_opcode?(opcode)
     @pc.add((opcode & 0x0FFF) + @registers.read_register(0x0).read)
   end
 end
@@ -543,11 +642,12 @@ class RandToRegister < Instruction
   def initialize(registers:, pc:)
     @registers = registers
     @pc = pc
+    # Cxkk
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0xC000 })
   end
 
   def execute(opcode)
-    # Cxkk
-    return unless opcode & 0xF000 == 0xC000
+    return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     value = (opcode & 0x00FF) & rand(0xFF)
     @registers.update_register(register_index, value)
@@ -563,11 +663,12 @@ class Draw < Instruction
     @registers = registers
     @pc = pc
     @vram = vram
+    # Dxyn
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0xD000 })
   end
 
   def execute(opcode)
-    # Dxyn
-    return unless opcode & 0xF000 == 0xD000
+    return if skip_opcode?(opcode)
     # register_index = (opcode & 0x0F00) >> 8
     # value = (opcode & 0x00FF) & rand(0xFF)
     # @registers.update_register(register_index, value)
@@ -615,53 +716,47 @@ if debug
   puts ma
   puts stack
   puts registers
-else
-
-  contents = IO.binread(File.join(__dir__, '../roms/pong.rom'))
-
-  write_position = pc.read
-  contents.each_byte do |b|
-    ram.write(write_position, b)
-    write_position+=1
-  end
-
-  instructions = [
-      ClearDisplay.new(display: display),
-      ReturnFromSubroutine.new(stack: stack, pc: pc),
-      Jump.new(pc: pc),
-      Call.new(stack: stack, pc: pc),
-      SkipRegisterEqualsValue.new(registers: registers, pc: pc),
-      SkipRegisterNotEqualsValue.new(registers: registers, pc: pc),
-      SkipRegisterEqualsRegister.new(registers: registers, pc: pc),
-      UpdateRegister.new(registers: registers, pc: pc),
-      AddToRegister.new(registers: registers, pc: pc),
-      Copy.new(registers: registers, pc: pc),
-      Or.new(registers: registers, pc: pc),
-      And.new(registers: registers, pc: pc),
-      Xor.new(registers: registers, pc: pc),
-      SumRegisters.new(registers: registers, pc: pc),
-      SubRegisters.new(registers: registers, pc: pc),
-      ShiftRightRegisters.new(registers: registers, pc: pc),
-      SubbRegisters.new(registers: registers, pc: pc),
-      ShiftLeftRegisters.new(registers: registers, pc: pc),
-      SkipRegisterNotEqualsRegister.new(registers: registers, pc: pc),
-      SetMemoryAddressRegister.new(ma: ma, pc: pc),
-      JumpToV0.new(registers: registers, pc: pc),
-      RandToRegister.new(registers: registers, pc: pc),
-      Draw.new(registers: registers, pc: pc, vram: vram)
-  ]
-  while true
-    code = ram.read(register: pc, length: 2)
-    puts "OPCODE: #{code.to_s(16)}"
-    instructions.each {|instruction| instruction.execute(code)}
-
-    puts pc
-    puts ma
-    puts stack
-    puts registers
-    puts "waiting for input"
-    next gets == "n"
-    break if gets == "q"
-  end
+  exit 0
 end
+
+contents = IO.binread(File.join(__dir__, '../roms/pong.rom'))
+
+write_position = pc.read
+contents.each_byte do |b|
+  ram.write(write_position, b)
+  write_position+=1
+end
+
+instructions = [
+    ClearDisplay.new(display: display),
+    ReturnFromSubroutine.new(stack: stack, pc: pc),
+    Jump.new(pc: pc),
+    Call.new(stack: stack, pc: pc),
+    SkipRegisterEqualsValue.new(registers: registers, pc: pc),
+    SkipRegisterNotEqualsValue.new(registers: registers, pc: pc),
+    SkipRegisterEqualsRegister.new(registers: registers, pc: pc),
+    UpdateRegister.new(registers: registers, pc: pc),
+    AddToRegister.new(registers: registers, pc: pc),
+    Copy.new(registers: registers, pc: pc),
+    Or.new(registers: registers, pc: pc),
+    And.new(registers: registers, pc: pc),
+    Xor.new(registers: registers, pc: pc),
+    SumRegisters.new(registers: registers, pc: pc),
+    SubRegisters.new(registers: registers, pc: pc),
+    ShiftRightRegisters.new(registers: registers, pc: pc),
+    SubbRegisters.new(registers: registers, pc: pc),
+    ShiftLeftRegisters.new(registers: registers, pc: pc),
+    SkipRegisterNotEqualsRegister.new(registers: registers, pc: pc),
+    SetMemoryAddressRegister.new(ma: ma, pc: pc),
+    JumpToV0.new(registers: registers, pc: pc),
+    RandToRegister.new(registers: registers, pc: pc),
+    Draw.new(registers: registers, pc: pc, vram: vram)
+]
+runner = ProgramRunner.new(instructions: instructions,
+                           ram: ram,
+                           pc: pc,
+                           registers: registers,
+                           ma: ma,
+                           stack: stack)
+runner.start
 
