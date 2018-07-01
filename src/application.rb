@@ -204,7 +204,7 @@ class InstructionId
   end
 end
 
-class ProgramRunner
+class Chip8
   # @param [Array[Instruction]] instructions
   # @param [Ram] ram
   # @param [ProgramCounter] pc
@@ -220,13 +220,14 @@ class ProgramRunner
     @stack = stack
   end
 
-  def start
+  def boot
     while true
       code = @ram.read(register: @pc, length: 2)
       puts "OPCODE: #{code.to_s(16)}"
       instruction = @instructions_map[InstructionId.new(code)]
       if instruction.nil?
         puts "WARN: no instruction implemented for #{code.to_s(16)}"
+        exit 1
       else
         puts instruction
         instruction.execute(code)
@@ -239,6 +240,7 @@ class ProgramRunner
       puts "waiting for input"
       next gets == "n"
       break if gets == "q"
+      # sleep 0.5
     end
   end
 end
@@ -627,7 +629,11 @@ class SkipRegisterNotEqualsRegister < Instruction
     return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
-    @pc.add(2) if @registers.read_register(first_register_index) != @registers.read_register(second_register_index)
+    if @registers.read_register(first_register_index) != @registers.read_register(second_register_index)
+      @pc.add(4)
+    else
+      @pc.add(2)
+    end
   end
 end
 
@@ -874,11 +880,11 @@ instructions = [
 load_fonts(ram: ram)
 load_rom(ram: ram, pc: pc)
 
-runner = ProgramRunner.new(instructions: instructions,
+runner = Chip8.new(instructions: instructions,
                            ram: ram,
                            pc: pc,
                            registers: registers,
                            ma: ma,
                            stack: stack)
-runner.start
+runner.boot
 
