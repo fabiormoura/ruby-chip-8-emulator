@@ -1,3 +1,22 @@
+CHARS_MAP = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, # 0
+    0x20, 0x60, 0x20, 0x20, 0x70, # 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, # 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, # 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, # 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, # 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, # 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, # 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, # 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, # 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, # A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, # B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, # C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, # D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, # E
+    0xF0, 0x80, 0xF0, 0x80, 0x80  # F
+].freeze
+
 class OverflowError < StandardError
 
 end
@@ -780,13 +799,23 @@ if debug
   exit 0
 end
 
-contents = IO.binread(File.join(__dir__, '../roms/pong.rom'))
-
-write_position = pc.read
-contents.each_byte do |b|
-  ram.write(write_position, b)
-  write_position+=1
+# @param [Ram] ram
+def load_fonts(ram:)
+  CHARS_MAP.each_with_index {|byte, position| ram.write(position, byte) }
 end
+
+# @param [Ram] ram
+# @param [ProgramCounter] pc
+def load_rom(ram:, pc:)
+  contents = IO.binread(File.join(__dir__, '../roms/pong.rom'))
+
+  write_position = pc.read
+  contents.each_byte do |b|
+    ram.write(write_position, b)
+    write_position+=1
+  end
+end
+
 
 instructions = [
     ClearDisplay.new(display: display),
@@ -815,6 +844,10 @@ instructions = [
     UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
     BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma)
 ]
+
+load_fonts(ram: ram)
+load_rom(ram: ram, pc: pc)
+
 runner = ProgramRunner.new(instructions: instructions,
                            ram: ram,
                            pc: pc,
