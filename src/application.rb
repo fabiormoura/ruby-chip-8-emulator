@@ -106,7 +106,12 @@ class Register
   end
 
   def ==(data)
-    @data == data
+    if data.is_a?(Integer)
+      return @data == data
+    elsif data.is_a?(Register) && data.class == self.class
+      return @data == data.read
+    end
+    raise NotImplementedError
   end
 
   def to_s
@@ -677,6 +682,35 @@ class Draw < Instruction
   end
 end
 
+
+class UpdateRamWithRegisterAsBCDRepresentation < Instruction
+  # @param [Registers] registers
+  # @param [MemoryAddress] ma
+  # @param [ProgramCounter] pc
+  # @param [Ram] ram
+  def initialize(registers:, ma:, pc:, ram:)
+    @registers = registers
+    @ma = ma
+    @pc = pc
+    @ram = ram
+    # Fx33
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF033 })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    register_value = @registers.read_register(register_index).read
+    memory_address = @ma.read
+
+    @ram.write(memory_address, register_value / 100)
+    @ram.write(memory_address + 1, (register_value / 10) % 10)
+    @ram.write(memory_address + 2, (register_value % 100) % 10)
+    @pc.add(2)
+  end
+end
+
+
 display = DumbDisplay.new
 pc = ProgramCounter.new
 
@@ -750,7 +784,8 @@ instructions = [
     SetMemoryAddressRegister.new(ma: ma, pc: pc),
     JumpToV0.new(registers: registers, pc: pc),
     RandToRegister.new(registers: registers, pc: pc),
-    Draw.new(registers: registers, pc: pc, vram: vram)
+    Draw.new(registers: registers, pc: pc, vram: vram),
+    UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma)
 ]
 runner = ProgramRunner.new(instructions: instructions,
                            ram: ram,
