@@ -3,6 +3,7 @@
 * https://github.com/badlogic/chip8/blob/master/roms/pong.rom
 * http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#memmap
 * http://www.multigesture.net/articles/how-to-write-an-emulator-chip-8-interpreter/
+* http://www.brandonfoltz.com/downloads/tutorials/The_Game_Loop_and_Frame_Rate_Management.pdf
 
 # ruby-chip-8-emulator
 
