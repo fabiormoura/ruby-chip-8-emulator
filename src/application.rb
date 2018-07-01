@@ -98,6 +98,11 @@ class Stack
     @addresses.push(data)
   end
 
+  def pop
+    raise OverflowError if @addresses.size == 0
+    @addresses.pop
+  end
+
   def to_s
     "STACK: #{@addresses}"
   end
@@ -283,7 +288,7 @@ class ReturnFromSubroutine < Instruction
 
   def execute(opcode)
     return if skip_opcode?(opcode)
-    puts "TODO: implement me"
+    @pc.update(@stack.pop)
   end
 end
 
