@@ -701,6 +701,26 @@ class Draw < Instruction
   end
 end
 
+class SetMemoryAddressRegisterToCharacter < Instruction
+  # @param [Registers] registers
+  # @param [MemoryAddress] ma
+  # @param [ProgramCounter] pc
+  def initialize(registers:, ma:, pc:)
+    @ma = ma
+    @pc = pc
+    @registers = registers
+    # Fx29
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF029 })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    register_value = @registers.read_register(register_index).read
+    @ma.update(register_value*5)
+    @pc.add(2)
+  end
+end
 
 class UpdateRamWithRegisterAsBCDRepresentation < Instruction
   # @param [Registers] registers
@@ -842,7 +862,8 @@ instructions = [
     RandToRegister.new(registers: registers, pc: pc),
     Draw.new(registers: registers, pc: pc, vram: vram),
     UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
-    BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma)
+    BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma),
+    SetMemoryAddressRegisterToCharacter.new(registers: registers, ma: ma, pc: pc)
 ]
 
 load_fonts(ram: ram)
