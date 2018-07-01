@@ -67,14 +67,44 @@ class DefaultDisplay < Display
   def draw
     return unless @redraw
     pixels = []
-    @vram.read_all.each_with_index do |pixel, index|
-      next if pixel == 0
-      y = index / 64
-      x = index % 64
-      pixels = [[x, y]]
+    32.times do |y|
+      64.times do |x|
+        pixels = [[x, y]] if @vram.read(address: (y*64) + x) != 0x0
+      end
     end
+    @window.pixels = pixels
+    # @vram.read_all.each_with_index do |pixel, index|
+    #   next if pixel == 0
+    #   puts "PI: #{index}"
+    #   y = index / 64
+    #   x = index % 64
+    #   pixels = [[x, y]]
+    # end
     @redraw = false
     @window.pixels = pixels
+  end
+end
+
+class DebuggerDisplay < Display
+  # @param [Vram] vram
+  def initialize(vram:)
+    @vram = vram
+  end
+
+  def draw
+    return unless @redraw
+    system('clear')
+    32.times do |y|
+      64.times do |x|
+        if @vram.read(address: (y*64) + x) == 0x0
+          printf("0")
+        else
+          printf(" ")
+        end
+      end
+      printf("\n")
+    end
+    printf("\n")
   end
 end
 
@@ -100,12 +130,15 @@ class Memory
 
   # @param [Register] register
   # @param [Integer] address
-  # @param [Integer] length
-  def read(register: nil, address: nil, length: 1)
-    memory_position = register.nil? ? address : register.read
-    validate_position!(memory_position)
-    validate_position!(memory_position + length)
-    @buffer[(memory_position)..(memory_position+length)].inject(0x0000) {|acc, byte| (acc << 8) | byte} >> 8
+  # @param [Integer] bytes_count
+  def read(register: nil, address: nil, bytes_count: 1)
+    start_memory_position = register.nil? ? address : register.read
+    end_memory_position = start_memory_position + bytes_count - 1
+
+    validate_position!(start_memory_position)
+    validate_position!(end_memory_position)
+
+    @buffer[(start_memory_position)..(end_memory_position)].inject(0x0000) {|acc, byte| (acc << @item_size_in_bits) | byte}
   end
 
   def to_s
@@ -278,15 +311,15 @@ class Chip8
   end
 
   def boot
-    steady_loop(fps: 30) do
-      code = @ram.read(register: @pc, length: 2)
-      puts "OPCODE: #{code.to_s(16)}"
+    steady_loop(fps: 10) do
+      code = @ram.read(register: @pc, bytes_count: 2)
+      # puts "OPCODE: #{code.to_s(16)}"
       instruction = @instructions_map[InstructionId.new(code)]
       if instruction.nil?
         puts "WARN: no instruction implemented for #{code.to_s(16)}"
         exit 1
       else
-        puts instruction
+        # puts instruction
         instruction.execute(code)
       end
       @display.draw
@@ -975,7 +1008,7 @@ class BatchLoadRegisterWithRamValues < Instruction
 end
 
 
-window = Window.new(scale: 4)
+window = Window.new(scale: 5)
 
 pc = ProgramCounter.new
 ma = MemoryAddress.new
@@ -985,7 +1018,8 @@ ram = Ram.new
 vram = Vram.new
 delay_timer = Timer.new
 
-display = DefaultDisplay.new(vram: vram, window: window)
+# display = DefaultDisplay.new(vram: vram, window: window)
+display = DebuggerDisplay.new(vram: vram)
 
 # @param [Ram] ram
 def load_fonts(ram:)
@@ -995,7 +1029,7 @@ end
 # @param [Ram] ram
 # @param [ProgramCounter] pc
 def load_rom(ram:, pc:)
-  contents = IO.binread(File.join(__dir__, '../roms/pong.rom'))
+  contents = IO.binread(File.join(__dir__, '../roms/pong2.c8'))
 
   write_position = pc.read
   contents.each_byte do |b|
@@ -1052,7 +1086,8 @@ chip8 = Chip8.new(instructions: instructions,
 
 
 pool = Concurrent::FixedThreadPool.new(1)
-pool.post do
-  chip8.boot
-end
-window.show
+# pool.post do
+#   chip8.boot
+# end
+chip8.boot
+# window.show
