@@ -21,19 +21,59 @@ class OverflowError < StandardError
 
 end
 
-class Display
-  def clear
+class Timer
+  def initialize
+    @ticks = 0
+  end
 
+  def set(ticks)
+    raise OverflowError if @ticks < 0
+    @ticks = ticks
+  end
+
+  def count_down
+    raise OverflowError if @ticks == 0
+    @ticks-=1
+  end
+
+  def positive?
+    @ticks > 0
   end
 end
 
-class DumbDisplay < Display
+class Display
   def initialize
-    @pixels = Array.new(2048, 0x0)
+    @redraw = false
   end
 
-  def clear
-    @pixels = Array.new(2048, 0x0)
+  def schedule_redraw
+    @redraw = true
+  end
+
+  def draw
+    raise NotImplementedError
+  end
+end
+
+class DefaultDisplay < Display
+  # @param [Vram] vram
+  # @param [Window] window
+  def initialize(vram:, window:)
+    @vram = vram
+    @window = window
+  end
+
+  def draw
+    return unless @redraw
+    pixels = []
+    @vram.read_all.each_with_index do |pixel, index|
+      next if pixel == 0
+      y = index / 64
+      x = index % 64
+      pixels = [[x, y]]
+    end
+    @redraw = false
+    @window.pixels = pixels
   end
 end
 
@@ -49,12 +89,22 @@ class Memory
     @buffer[position] = data
   end
 
+  def read_all
+    @buffer
+  end
+
+  def clear_all
+    @buffer = Array.new(@buffer.size, 0x0)
+  end
+
   # @param [Register] register
+  # @param [Integer] address
   # @param [Integer] length
-  def read(register:, length: 1)
-    validate_position!(register.read)
-    validate_position!(register.read + length)
-    @buffer[(register.read)..(register.read+length)].inject(0x0000) {|acc, byte| (acc << 8) | byte} >> 8
+  def read(register: nil, address: nil, length: 1)
+    memory_position = register.nil? ? address : register.read
+    validate_position!(memory_position)
+    validate_position!(memory_position + length)
+    @buffer[(memory_position)..(memory_position+length)].inject(0x0000) {|acc, byte| (acc << 8) | byte} >> 8
   end
 
   def to_s
@@ -145,7 +195,7 @@ end
 
 class Registers
   def initialize(count:, register_size_in_bits:, name: "REGISTERS")
-    @registers = Array.new(count) { |index| Register.new(size_in_bits: register_size_in_bits, name: "V#{index}") }
+    @registers = Array.new(count) { |index| Register.new(size_in_bits: register_size_in_bits, name: "V#{index.to_s(16).upcase}") }
     @name = name
   end
 
@@ -211,17 +261,21 @@ class Chip8
   # @param [Registers] registers
   # @param [MemoryAddress] ma
   # @param [Stack] stack
-  def initialize(instructions:, ram:, pc:, registers:, ma:, stack:)
+  # @param [Display] display
+  # @param [Timer] delay_timer
+  def initialize(instructions:, ram:, pc:, registers:, ma:, stack:, display:, delay_timer:)
     @instructions_map = instructions.map{ |instruction| [instruction.instruction_id, instruction] }.to_h
     @ram = ram
     @pc = pc
     @registers = registers
     @ma = ma
     @stack = stack
+    @display = display
+    @delay_timer = delay_timer
   end
 
   def boot
-    while true
+    steady_loop(fps: 30) do
       code = @ram.read(register: @pc, length: 2)
       puts "OPCODE: #{code.to_s(16)}"
       instruction = @instructions_map[InstructionId.new(code)]
@@ -232,17 +286,33 @@ class Chip8
         puts instruction
         instruction.execute(code)
       end
+      @display.draw
 
-      puts @pc
-      puts @ma
-      puts @stack
-      puts @registers
-      puts "waiting for input"
-      next gets == "n"
-      break if gets == "q"
-      # sleep 0.5
+      @delay_timer.count_down if @delay_timer.positive?
+      # puts @pc
+      # puts @ma
+      # puts @stack
+      # puts @registers
+      # puts "waiting for input"
+      # next gets == "n"
+      # break if gets == "q"
+      # sleep 0.4
     end
   end
+
+  # @param [Integer] fps
+  def steady_loop(fps:,&proc)
+    frame_ms = 1.to_f / fps.to_f
+    loop do
+      start_time_in_seconds = Time.now.to_f
+      proc.call
+      end_time_in_seconds = Time.now.to_f
+      delay_in_seconds = frame_ms - (end_time_in_seconds - start_time_in_seconds)
+      sleep delay_in_seconds if delay_in_seconds > 0.0
+    end
+  end
+
+  private :steady_loop
 end
 
 class Instruction
@@ -268,14 +338,19 @@ end
 
 class ClearDisplay < Instruction
   # @param [Display] display
-  def initialize(display:)
+  # @param [Vram] vram
+  # @param [ProgramCounter] pc
+  def initialize(display:, vram:, pc:)
     @display = display
+    @vram = vram
     super(instruction_id: InstructionId.new(0x00E0))
   end
 
   def execute(opcode)
     return if skip_opcode?(opcode)
-    @display.clear
+    @vram.clear_all
+    @pc.add(2)
+    @display.schedule_redraw
   end
 end
 
@@ -291,6 +366,7 @@ class ReturnFromSubroutine < Instruction
   def execute(opcode)
     return if skip_opcode?(opcode)
     @pc.update(@stack.pop)
+    @pc.add(2)
   end
 end
 
@@ -336,7 +412,11 @@ class SkipRegisterEqualsValue < Instruction
   def execute(opcode)
     return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
-    @pc.add(2) if @registers.read_register(register_index) == opcode & 0x00FF
+    if @registers.read_register(register_index) == opcode & 0x00FF
+      @pc.add(4)
+    else
+      @pc.add(2)
+    end
   end
 end
 
@@ -353,7 +433,11 @@ class SkipRegisterNotEqualsValue < Instruction
   def execute(opcode)
     return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
-    @pc.add(2) if @registers.read_register(register_index) != opcode & 0x00FF
+    if @registers.read_register(register_index) != opcode & 0x00FF
+      @pc.add(4)
+    else
+      @pc.add(2)
+    end
   end
 end
 
@@ -371,7 +455,11 @@ class SkipRegisterEqualsRegister < Instruction
     return if skip_opcode?(opcode)
     first_register_index = (opcode & 0x0F00) >> 8
     second_register_index = (opcode & 0x00F0) >> 4
-    @pc.add(2) if @registers.read_register(first_register_index) == @registers.read_register(second_register_index)
+    if @registers.read_register(first_register_index) == @registers.read_register(second_register_index)
+      @pc.add(4)
+    else
+      @pc.add(2)
+    end
   end
 end
 
@@ -693,21 +781,53 @@ end
 class Draw < Instruction
   # @param [Registers] registers
   # @param [ProgramCounter] pc
+  # @param [MemoryAddress] ma
   # @param [Vram] vram
-  def initialize(registers:, pc:, vram:)
+  # @param [Display] display
+  # @param [Ram] ram
+  def initialize(registers:, pc:, ma:, vram:, display:, ram:)
     @registers = registers
     @pc = pc
+    @ma = ma
     @vram = vram
+    @display = display
+    @ram = ram
     # Dxyn
     super(instruction_id: InstructionId.new {|opcode| opcode & 0xF000 == 0xD000 })
   end
 
   def execute(opcode)
     return if skip_opcode?(opcode)
-    # register_index = (opcode & 0x0F00) >> 8
-    # value = (opcode & 0x00FF) & rand(0xFF)
-    # @registers.update_register(register_index, value)
-    # TODO: implement me
+    first_register_index = (opcode & 0x0F00) >> 8
+    second_register_index = (opcode & 0x00F0) >> 4
+    height = opcode & 0x000F
+    x = @registers.read_register(first_register_index).read
+    y = @registers.read_register(second_register_index).read
+    @registers.update_register(0x0F, 0x00)
+
+    # puts "x: #{x}"
+    # puts "y: #{y}"
+
+    height.times do |dy|
+      pixels = @ram.read(address: (@ma.read + dy))
+      8.times.each do |dx|
+        # puts "pixels: #{pixels.to_s(2)}"
+        # puts "dx: #{dx}"
+        # puts "pixels & #{((0b10000000 >> dx)).to_s(2)}"
+        # puts "#{pixels & ((0b10000000 >> dx))}"
+        next if pixels & ((0b10000000 >> dx)) == 0
+        pixel_index = (x + dx + ((y + dy) * 64))
+        pixel = @vram.read(address: pixel_index)
+        @registers.update_register(0x0F, 0x01) if pixel == 1
+        # puts "pi: #{pixel_index}"
+        # puts "po: #{pixel}"
+        # puts "pn: #{pixel ^ 1}"
+
+        @vram.write(pixel_index, pixel ^ 1)
+      end
+    end
+    # puts"%%%%%%%%%%%%%%%"
+    @display.schedule_redraw
     @pc.add(2)
   end
 end
@@ -788,7 +908,9 @@ class BatchLoadRegisterWithRamValues < Instruction
 end
 
 
-display = DumbDisplay.new
+window = Window.new(scale: 10)
+
+
 pc = ProgramCounter.new
 
 ma = MemoryAddress.new
@@ -796,7 +918,9 @@ stack = Stack.new(levels: 16, item_size_in_bits: 16)
 registers = Registers.new(count: 16, register_size_in_bits: 8)
 ram = Ram.new
 vram = Vram.new
+delay_timer = Timer.new
 
+display = DefaultDisplay.new(vram: vram, window: window)
 debug = false
 if debug
   ClearDisplay.new(display: display).execute(0x0)
@@ -849,7 +973,7 @@ end
 
 
 instructions = [
-    ClearDisplay.new(display: display),
+    ClearDisplay.new(display: display, vram: vram, pc: pc),
     ReturnFromSubroutine.new(stack: stack, pc: pc),
     Jump.new(pc: pc),
     Call.new(stack: stack, pc: pc),
@@ -871,7 +995,7 @@ instructions = [
     SetMemoryAddressRegister.new(ma: ma, pc: pc),
     JumpToV0.new(registers: registers, pc: pc),
     RandToRegister.new(registers: registers, pc: pc),
-    Draw.new(registers: registers, pc: pc, vram: vram),
+    Draw.new(registers: registers, pc: pc, ma: ma, vram: vram, display: display, ram: ram),
     UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
     BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma),
     SetMemoryAddressRegisterToCharacter.new(registers: registers, ma: ma, pc: pc)
@@ -880,11 +1004,20 @@ instructions = [
 load_fonts(ram: ram)
 load_rom(ram: ram, pc: pc)
 
-runner = Chip8.new(instructions: instructions,
+chip8 = Chip8.new(instructions: instructions,
                            ram: ram,
                            pc: pc,
                            registers: registers,
                            ma: ma,
-                           stack: stack)
-runner.boot
+                           stack: stack,
+                           display: display,
+                           delay_timer: delay_timer)
 
+
+
+
+pool = Concurrent::FixedThreadPool.new(1)
+pool.post do
+  chip8.boot
+end
+window.show
