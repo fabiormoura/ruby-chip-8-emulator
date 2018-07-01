@@ -177,7 +177,9 @@ class Register
   end
 
   def add(data)
-    @data += data
+    updated_data = @data + data
+    raise OverflowError if (updated_data >> @size_in_bits) > 0
+    @data = updated_data
   end
 
   def ==(data)
@@ -344,6 +346,7 @@ class ClearDisplay < Instruction
   def initialize(display:, vram:, pc:)
     @display = display
     @vram = vram
+    @pc = pc
     super(instruction_id: InstructionId.new(0x00E0))
   end
 
@@ -726,7 +729,7 @@ class SkipRegisterNotEqualsRegister < Instruction
   end
 end
 
-class SetMemoryAddressRegister < Instruction
+class SetMemoryAddressRegisterToValue < Instruction
   # @param [MemoryAddress] ma
   # @param [ProgramCounter] pc
   def initialize(ma:, pc:)
@@ -875,6 +878,27 @@ class SetDelayTimer < Instruction
   end
 end
 
+class IncrementMemoryAddressRegisterWithRegisterValue < Instruction
+  # @param [Registers] registers
+  # @param [MemoryAddress] ma
+  # @param [ProgramCounter] pc
+  def initialize(registers:, ma:, pc:)
+    @ma = ma
+    @pc = pc
+    @registers = registers
+    # Fx1E
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF01E })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    register_value = @registers.read_register(register_index).read
+    @ma.add(register_value)
+    @pc.add(2)
+  end
+end
+
 class SetMemoryAddressRegisterToCharacter < Instruction
   # @param [Registers] registers
   # @param [MemoryAddress] ma
@@ -891,7 +915,7 @@ class SetMemoryAddressRegisterToCharacter < Instruction
     return if skip_opcode?(opcode)
     register_index = (opcode & 0x0F00) >> 8
     register_value = @registers.read_register(register_index).read
-    @ma.update(register_value*5)
+    @ma.update(register_value*0x05)
     @pc.add(2)
   end
 end
@@ -951,11 +975,9 @@ class BatchLoadRegisterWithRamValues < Instruction
 end
 
 
-window = Window.new(scale: 10)
-
+window = Window.new(scale: 4)
 
 pc = ProgramCounter.new
-
 ma = MemoryAddress.new
 stack = Stack.new(levels: 16, item_size_in_bits: 16)
 registers = Registers.new(count: 16, register_size_in_bits: 8)
@@ -964,38 +986,6 @@ vram = Vram.new
 delay_timer = Timer.new
 
 display = DefaultDisplay.new(vram: vram, window: window)
-debug = false
-if debug
-  ClearDisplay.new(display: display).execute(0x0)
-  ReturnFromSubroutine.new(stack: stack, pc: pc).execute(0x0)
-  Jump.new(pc: pc).execute(0xFFFF)
-  Call.new(stack: stack, pc: pc).execute(0xFFFF)
-  SkipRegisterEqualsValue.new(registers: registers, pc: pc).execute(0xFFFF)
-  SkipRegisterNotEqualsValue.new(registers: registers, pc: pc).execute(0xFFFF)
-  SkipRegisterEqualsRegister.new(registers: registers, pc: pc).execute(0xFFFF)
-  UpdateRegister.new(registers: registers, pc: pc).execute(0xFFFF)
-  AddToRegister.new(registers: registers, pc: pc).execute(0xF104)
-  Copy.new(registers: registers, pc: pc).execute(0xF210)
-  Or.new(registers: registers, pc: pc).execute(0x8411)
-  And.new(registers: registers, pc: pc).execute(0x8512)
-  Xor.new(registers: registers, pc: pc).execute(0x8213)
-  SumRegisters.new(registers: registers, pc: pc).execute(0x8144)
-  SubRegisters.new(registers: registers, pc: pc).execute(0x8145)
-  ShiftRightRegisters.new(registers: registers, pc: pc).execute(0x8246)
-  SubbRegisters.new(registers: registers, pc: pc).execute(0x8246)
-  ShiftLeftRegisters.new(registers: registers, pc: pc).execute(0x8426)
-  SkipRegisterNotEqualsRegister.new(registers: registers, pc: pc).execute(0xFFFF)
-  SetMemoryAddressRegister.new(ma: ma, pc: pc).execute(0xA333)
-  JumpToV0.new(registers: registers, pc: pc).execute(0xB222)
-  RandToRegister.new(registers: registers, pc: pc).execute(0xC7FF)
-  Draw.new(registers: registers, pc: pc, vram: vram).execute(0xD003)
-
-  puts pc
-  puts ma
-  puts stack
-  puts registers
-  exit 0
-end
 
 # @param [Ram] ram
 def load_fonts(ram:)
@@ -1013,7 +1003,6 @@ def load_rom(ram:, pc:)
     write_position+=1
   end
 end
-
 
 instructions = [
     ClearDisplay.new(display: display, vram: vram, pc: pc),
@@ -1035,12 +1024,13 @@ instructions = [
     SubbRegisters.new(registers: registers, pc: pc),
     ShiftLeftRegisters.new(registers: registers, pc: pc),
     SkipRegisterNotEqualsRegister.new(registers: registers, pc: pc),
-    SetMemoryAddressRegister.new(ma: ma, pc: pc),
+    SetMemoryAddressRegisterToValue.new(ma: ma, pc: pc),
     JumpToV0.new(registers: registers, pc: pc),
     RandToRegister.new(registers: registers, pc: pc),
     Draw.new(registers: registers, pc: pc, ma: ma, vram: vram, display: display, ram: ram),
     SetRegisterToDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
     SetDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
+    IncrementMemoryAddressRegisterWithRegisterValue.new(registers: registers, ma: ma, pc: pc),
     SetMemoryAddressRegisterToCharacter.new(registers: registers, ma: ma, pc: pc),
     UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
     BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma)
