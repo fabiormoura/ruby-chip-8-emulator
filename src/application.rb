@@ -22,6 +22,7 @@ class OverflowError < StandardError
 end
 
 class Timer
+  attr_reader :ticks
   def initialize
     @ticks = 0
   end
@@ -832,6 +833,48 @@ class Draw < Instruction
   end
 end
 
+class SetRegisterToDelayTimer < Instruction
+  # @param [Registers] registers
+  # @param [ProgramCounter] pc
+  # @param [Timer] delay_timer
+  def initialize(registers:, pc:, delay_timer:)
+    @registers = registers
+    @pc = pc
+    @delay_timer = delay_timer
+    # Fx07
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF007 })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    @registers.update_register(register_index, @delay_timer.ticks)
+    @pc.add(2)
+  end
+end
+
+
+class SetDelayTimer < Instruction
+  # @param [Registers] registers
+  # @param [ProgramCounter] pc
+  # @param [Timer] delay_timer
+  def initialize(registers:, pc:, delay_timer:)
+    @registers = registers
+    @pc = pc
+    @delay_timer = delay_timer
+    # Fx15
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF015 })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    register_value = @registers.read_register(register_index).read
+    @delay_timer.set(register_value)
+    @pc.add(2)
+  end
+end
+
 class SetMemoryAddressRegisterToCharacter < Instruction
   # @param [Registers] registers
   # @param [MemoryAddress] ma
@@ -996,9 +1039,11 @@ instructions = [
     JumpToV0.new(registers: registers, pc: pc),
     RandToRegister.new(registers: registers, pc: pc),
     Draw.new(registers: registers, pc: pc, ma: ma, vram: vram, display: display, ram: ram),
+    SetRegisterToDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
+    SetDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
+    SetMemoryAddressRegisterToCharacter.new(registers: registers, ma: ma, pc: pc),
     UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
-    BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma),
-    SetMemoryAddressRegisterToCharacter.new(registers: registers, ma: ma, pc: pc)
+    BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma)
 ]
 
 load_fonts(ram: ram)
