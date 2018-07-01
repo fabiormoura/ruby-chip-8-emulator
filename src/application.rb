@@ -710,6 +710,33 @@ class UpdateRamWithRegisterAsBCDRepresentation < Instruction
   end
 end
 
+class BatchLoadRegisterWithRamValues < Instruction
+  # @param [Registers] registers
+  # @param [MemoryAddress] ma
+  # @param [ProgramCounter] pc
+  # @param [Ram] ram
+  def initialize(registers:, ma:, pc:, ram:)
+    @registers = registers
+    @ma = ma
+    @pc = pc
+    @ram = ram
+    # Fx33
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF065 })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    last_register_index = (opcode & 0x0F00) >> 8
+
+    0.upto(last_register_index).each do |register_index|
+      memory_address = @ma.read
+      @registers.update_register(register_index, @ram.read(register: @ma))
+      @ma.update(memory_address+1)
+    end
+    @pc.add(2)
+  end
+end
+
 
 display = DumbDisplay.new
 pc = ProgramCounter.new
@@ -785,7 +812,8 @@ instructions = [
     JumpToV0.new(registers: registers, pc: pc),
     RandToRegister.new(registers: registers, pc: pc),
     Draw.new(registers: registers, pc: pc, vram: vram),
-    UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma)
+    UpdateRamWithRegisterAsBCDRepresentation.new(registers: registers, pc: pc, ram: ram, ma: ma),
+    BatchLoadRegisterWithRamValues.new(registers: registers, pc: pc, ram: ram, ma: ma)
 ]
 runner = ProgramRunner.new(instructions: instructions,
                            ram: ram,
