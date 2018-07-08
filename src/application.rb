@@ -329,7 +329,8 @@ class Chip8
   # @param [Timer] delay_timer
   # @param [Timer] sound_timer
   # @param [InputPort] input_port
-  def initialize(instructions:, ram:, pc:, registers:, ma:, stack:, display:, delay_timer:, sound_timer:, input_port:)
+  # @param [Speaker] speaker
+  def initialize(instructions:, ram:, pc:, registers:, ma:, stack:, display:, delay_timer:, sound_timer:, input_port:, speaker:)
     @instructions_map = instructions.map{ |instruction| [instruction.instruction_id, instruction] }.to_h
     @ram = ram
     @pc = pc
@@ -340,6 +341,7 @@ class Chip8
     @delay_timer = delay_timer
     @sound_timer = sound_timer
     @input_port = input_port
+    @speaker = speaker
   end
 
   def boot
@@ -357,16 +359,19 @@ class Chip8
       @display.draw
 
       @delay_timer.count_down if @delay_timer.ticking?
-      @sound_timer.count_down if @sound_timer.ticking?
+
+      if @sound_timer.ticking?
+        @speaker.play
+        @sound_timer.count_down
+      else
+        @speaker.stop
+      end
+
       @input_port.update
       # puts @pc
       # puts @ma
       # puts @stack
       # puts @registers
-      # puts "waiting for input"
-      # next gets == "n"
-      # break if gets == "q"
-      # sleep 0.4
     end
   end
 
@@ -1237,7 +1242,8 @@ chip8 = Chip8.new(instructions: instructions,
                   display: display,
                   delay_timer: delay_timer,
                   sound_timer: sound_timer,
-                  input_port: input_port)
+                  input_port: input_port,
+                  speaker: Speaker.new)
 
 pool = Concurrent::FixedThreadPool.new(1)
 pool.post do
