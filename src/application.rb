@@ -164,13 +164,14 @@ class Memory
   end
 
   def validate_position!(position)
-    raise OverflowError unless position >= 0 && position < @buffer.size
+    raise OverflowError,
+          "invalid position. value #{position} has to be between [0,#{@buffer.size-1}]" unless position >= 0 && position < @buffer.size
   end
 
   private :validate_position!
 
   def validate_data!(data)
-    raise OverflowError unless (data >> @item_size_in_bits) == 0
+    raise OverflowError, "invalid data #{data.to_s(16)}. It has to be less than #{@item_size_in_bits} bits" unless (data >> @item_size_in_bits) == 0
   end
 
   private :validate_data!
@@ -571,7 +572,8 @@ class AddToRegister < Instruction
     register_index = (opcode & 0x0F00) >> 8
     value = opcode & 0x00FF
     current_value = @registers.read_register(register_index).read
-    @registers.update_register(register_index, value + current_value)
+    sum = value + current_value
+    @registers.update_register(register_index, sum & 0xFF)
     @pc.add(2)
   end
 end
@@ -681,8 +683,9 @@ class SumRegisters < Instruction
     first_register_value = @registers.read_register(first_register_index).read
     second_register_value = @registers.read_register(second_register_index).read
     sum = first_register_value + second_register_value
+
+    @registers.update_register(0x0F, 0x01) if sum > 0xFF
     @registers.update_register(first_register_index, sum & 0xFF)
-    @registers.update_register(0x0F, 0x01) if sum >> 8 > 0
     @pc.add(2)
   end
 end
@@ -704,8 +707,17 @@ class SubRegisters < Instruction
 
     first_register_value = @registers.read_register(first_register_index).read
     second_register_value = @registers.read_register(second_register_index).read
-    @registers.update_register(0x0F, 0x01) if first_register_value > second_register_value
-    @registers.update_register(first_register_index, first_register_value - second_register_value)
+
+    sub = first_register_value - second_register_value
+
+    if sub < 0x00
+      sub += 256
+      @registers.update_register(0x0F, 0x00)
+    else
+      @registers.update_register(0x0F, 0x01)
+    end
+
+    @registers.update_register(first_register_index, sub)
     @pc.add(2)
   end
 end
@@ -749,8 +761,16 @@ class SubbRegisters < Instruction
 
     first_register_value = @registers.read_register(first_register_index).read
     second_register_value = @registers.read_register(second_register_index).read
-    @registers.update_register(0x0F, 0x01) if second_register_value > first_register_value
-    @registers.update_register(first_register_index, second_register_value - first_register_value)
+    sub = second_register_value - first_register_value
+
+    if sub < 0x00
+      sub += 256
+      @registers.update_register(0x0F, 0x00)
+    else
+      @registers.update_register(0x0F, 0x01)
+    end
+
+    @registers.update_register(first_register_index, sub)
     @pc.add(2)
   end
 end
@@ -879,28 +899,19 @@ class Draw < Instruction
     y = @registers.read_register(second_register_index).read
     @registers.update_register(0x0F, 0x00)
 
-    # puts "x: #{x}"
-    # puts "y: #{y}"
-
     height.times do |dy|
       pixels = @ram.read(address: (@ma.read + dy))
       8.times.each do |dx|
-        # puts "pixels: #{pixels.to_s(2)}"
-        # puts "dx: #{dx}"
-        # puts "pixels & #{((0b10000000 >> dx)).to_s(2)}"
-        # puts "#{pixels & ((0b10000000 >> dx))}"
         next if pixels & ((0b10000000 >> dx)) == 0
-        pixel_index = (x + dx + ((y + dy) * 64))
+        x_coordinate = (x + dx) % @vram.width
+        y_coordinate = (y + dy) % @vram.height
+        pixel_index = (x_coordinate + (y_coordinate * 64))
         pixel = @vram.read(address: pixel_index)
         @registers.update_register(0x0F, 0x01) if pixel == 1
-        # puts "pi: #{pixel_index}"
-        # puts "po: #{pixel}"
-        # puts "pn: #{pixel ^ 1}"
 
         @vram.write(pixel_index, pixel ^ 1)
       end
     end
-    # puts"%%%%%%%%%%%%%%%"
     @display.schedule_redraw
     @pc.add(2)
   end
@@ -973,6 +984,34 @@ class SetRegisterToDelayTimer < Instruction
     register_index = (opcode & 0x0F00) >> 8
     @registers.update_register(register_index, @delay_timer.ticks)
     @pc.add(2)
+  end
+end
+
+class WaitKeyPressed < Instruction
+  # @param [Registers] input_registers
+  # @param [Registers] registers
+  # @param [ProgramCounter] pc
+  def initialize(input_registers:, registers:, pc:)
+    @input_registers = input_registers
+    @registers = registers
+    @pc = pc
+    # Fx0A
+    super(instruction_id: InstructionId.new {|opcode| opcode & 0xF0FF == 0xF00A })
+  end
+
+  def execute(opcode)
+    return if skip_opcode?(opcode)
+    register_index = (opcode & 0x0F00) >> 8
+    register_index = @registers.read_register(register_index).read
+
+    0x00.upto(0xF).each do |key_id|
+      key_pressed = @input_registers.read_register(key_id).read == 0x1
+      if key_pressed
+        @pc.add(2)
+        @registers.update_register(register_index, key_id) if key_pressed
+        break
+      end
+    end
   end
 end
 
@@ -1177,6 +1216,7 @@ instructions = [
     SkipIfKeyNotPressed.new(registers: registers, input_registers: input_registers, pc: pc),
     SkipIfKeyPressed.new(registers: registers, input_registers: input_registers, pc: pc),
     SetRegisterToDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
+    WaitKeyPressed.new(input_registers: input_registers, registers: registers, pc: pc),
     SetDelayTimer.new(registers: registers, delay_timer: delay_timer, pc: pc),
     SetSoundTimer.new(registers: registers, sound_timer: sound_timer, pc: pc),
     IncrementMemoryAddressRegisterWithRegisterValue.new(registers: registers, ma: ma, pc: pc),
